@@ -1,0 +1,117 @@
+name: Backend test stage
+description: Run one globally ordered stage of the backend test matrix.
+inputs:
+  stage:
+    description: previous, risk, or canonical
+    required: true
+  node:
+    description: Node.js major version for this matrix leg
+    required: true
+  prior-stage:
+    description: The preceding stage whose exact history snapshot this stage must restore
+    required: false
+    default: ""
+  just-for-test:
+    description: Test-only application secret
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+  - run: git config --global core.autocrlf false  # Mainly for Windows
+    shell: bash
+  - name: Use Node.js ${{ inputs.node }}
+    uses: actions/setup-node@v3
+    with:
+      node-version: ${{ inputs.node }}
+      cache: npm
+  - name: Install dependencies
+    id: install
+    run: npm install
+    shell: bash
+  - name: Build application
+    id: build
+    run: npm run build
+    shell: bash
+  - name: Compute replay cache scope
+    id: replay-scope
+    run: node test/ci-test-replay.js --scope-key
+    shell: bash
+    env:
+      CI_TEST_REPLAY_NODE: ${{ inputs.node }}
+      GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+      GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
+      GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+      GITHUB_EVENT_NAME: ${{ github.event_name }}
+      GITHUB_WORKFLOW: ${{ github.workflow }}
+  - name: Restore legacy cache
+    if: inputs.stage == 'previous'
+    id: legacy-cache-restore
+    uses: actions/cache/restore@v3
+    with:
+      path: .ci-test-replay
+      key: uptime-kuma-replay-${{ runner.os }}-node-${{ inputs.node }}-${{ github.event.pull_request.number || github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+      restore-keys: |
+        uptime-kuma-replay-${{ runner.os }}-node-${{ inputs.node }}-${{ github.event.pull_request.number || github.ref_name }}-
+  - name: Stage legacy replay cache
+    if: inputs.stage == 'previous'
+    id: legacy-stage
+    run: node test/ci-test-replay.js --stage-legacy
+    shell: bash
+  - name: Restore prior-stage replay cache
+    if: inputs.stage != 'previous'
+    id: prior-stage-cache-restore
+    uses: actions/cache/restore@v3
+    with:
+      path: .ci-test-replay
+      key: uptime-kuma-replay-${{ steps.replay-scope.outputs.key }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.prior-stage }}
+  - name: Verify prior-stage history was restored
+    if: inputs.stage != 'previous'
+    run: node test/ci-test-replay.js --assert-cache-hit
+    shell: bash
+    env:
+      CI_TEST_REPLAY_CACHE_HIT: ${{ steps.prior-stage-cache-restore.outputs.cache-hit }}
+  - name: Restore replay history
+    if: inputs.stage == 'previous'
+    id: replay-cache-restore
+    uses: actions/cache/restore@v3
+    with:
+      path: .ci-test-replay
+      key: uptime-kuma-replay-${{ steps.replay-scope.outputs.key }}-${{ github.run_id }}-${{ github.run_attempt }}-previous
+      restore-keys: |
+        uptime-kuma-replay-${{ steps.replay-scope.outputs.key }}-
+  - name: Import legacy replay IDs
+    if: inputs.stage == 'previous'
+    id: legacy-import
+    run: node test/ci-test-replay.js --import-legacy
+    shell: bash
+    env:
+      CI_TEST_REPLAY_NODE: ${{ inputs.node }}
+      GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+      GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
+      GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+      GITHUB_EVENT_NAME: ${{ github.event_name }}
+      GITHUB_WORKFLOW: ${{ github.workflow }}
+  - name: Run backend test stage
+    id: tests
+    run: npm test
+    shell: bash
+    env:
+      HEADLESS_TEST: 1
+      JUST_FOR_TEST: ${{ inputs.just-for-test }}
+      CI_TEST_REPLAY_NODE: ${{ inputs.node }}
+      CI_TEST_REPLAY_PHASE: ${{ inputs.stage }}
+      GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+      GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
+      GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+      GITHUB_EVENT_NAME: ${{ github.event_name }}
+      GITHUB_WORKFLOW: ${{ github.workflow }}
+  - name: Save replay history
+    if: always() && steps.tests.outcome != 'skipped' && steps.replay-scope.outcome == 'success' && (inputs.stage != 'previous' || (steps.legacy-cache-restore.outcome == 'success' && steps.legacy-stage.outcome == 'success' && steps.replay-cache-restore.outcome == 'success' && steps.legacy-import.outcome == 'success')) && (inputs.stage == 'previous' || steps.prior-stage-cache-restore.outcome == 'success')
+    uses: actions/cache/save@v3
+    with:
+      path: .ci-test-replay
+      key: uptime-kuma-replay-${{ steps.replay-scope.outputs.key }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.stage }}
