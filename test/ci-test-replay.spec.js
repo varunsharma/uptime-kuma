@@ -59,6 +59,12 @@ describe("CI test replay policy", () => {
         const linters = workflowJobBlock(workflow, "check-linters");
         const e2e = workflowJobBlock(workflow, "e2e-tests");
 
+        [previous, risk, canonical].forEach((job) => {
+            const checkout = job.indexOf("uses: actions/checkout@v3");
+            const localAction = job.indexOf("uses: ./.github/actions/auto-test-stage");
+            expect(checkout).toBeGreaterThanOrEqual(0);
+            expect(localAction).toBeGreaterThan(checkout);
+        });
         expect(previous).not.toMatch(/^    needs:/m);
         expect(risk).toMatch(/^    needs:\s*\[\s*auto-test-previous\s*\]$/m);
         expect(canonical).toMatch(/^    needs:\s*\[\s*auto-test-risk\s*\]$/m);
