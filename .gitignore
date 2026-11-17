@@ -12,6 +12,8 @@ dist-ssr
 /private
 /out
 /tmp
+.ci-test-replay
+.ci-test-replay-legacy
 .env
 
 cypress/videos
